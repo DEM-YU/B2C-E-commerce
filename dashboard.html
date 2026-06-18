@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Order Management Dashboard</title>
+</head>
+<body>
+    <h1>Order Management Dashboard</h1>
+    <p>Minimalist Order Management Dashboard</p>
+    <hr>
+
+    <!-- Control Panel -->
+    <div>
+        <h3>1. Control Panel</h3>
+        <button id="btn-seed">Seed Data</button>
+        <button id="btn-refresh">Refresh</button>
+        <br><br>
+        <label>Action Type:
+            <select id="action-type">
+                <option value="refund">Partial Refund</option>
+                <option value="split">Split Order</option>
+            </select>
+        </label>
+        <label>Order ID: <input type="number" id="input-order-id" value="1" style="width: 80px;"></label>
+        <label>Variant / Item ID: <input type="number" id="input-item-id" value="1" style="width: 80px;"></label>
+        <label>Refund Qty: <input type="number" id="input-qty" value="1" style="width: 60px;"></label>
+        <button id="btn-action">Submit</button>
+    </div>
+    <hr>
+
+    <!-- Transaction Ledger -->
+    <div>
+        <h3>2. Transaction Ledger</h3>
+        <table border="1" cellpadding="6" cellspacing="0" id="table-ledger" style="width: 100%; text-align: left; border-collapse: collapse;">
+            <thead>
+                <tr>
+                    <th>Order ID</th>
+                    <th>Status</th>
+                    <th>Item ID</th>
+                    <th>Variant ID</th>
+                    <th>Warehouse</th>
+                    <th>Qty</th>
+                    <th>Unit Price</th>
+                    <th>Paid Price</th>
+                    <th>Refunded Qty</th>
+                    <th>Refunded Amount</th>
+                    <th>Fully Refunded</th>
+                </tr>
+            </thead>
+            <tbody id="ledger-body">
+                <tr><td colspan="11">Syncing database...</td></tr>
+            </tbody>
+        </table>
+    </div>
+    <hr>
+
+    <!-- Audit Log Console -->
+    <div>
+        <h3>3. Audit Log</h3>
+        <pre id="system-logs" style="background:#f4f4f4; border:1px solid #ccc; padding:10px; min-height: 200px; max-height: 400px; overflow-y: auto; font-family: monospace;"></pre>
+    </div>
+
+    <script>
+        const API_BASE = '/api/v1/transaction';
+        const logEl = document.getElementById('system-logs');
+
+        function appendLog(text) {
+            const time = new Date().toLocaleTimeString();
+            logEl.textContent += `[${time}] ${text}\n`;
+            logEl.scrollTop = logEl.scrollHeight;
+        }
+
+        // Refresh transaction ledger
+        async function fetchOrders() {
+            appendLog('[Ledger] Syncing database...');
+            try {
+                const res = await fetch(`${API_BASE}/orders/?limit=50`);
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                const orders = await res.json();
+                
+                const tbody = document.getElementById('ledger-body');
+                tbody.innerHTML = '';
+                if (orders.length === 0) {
+                    tbody.innerHTML = '<tr><td colspan="11">No data. Click \'Seed Data\' to start.</td></tr>';
+                    appendLog('[Ledger] No orders found.');
+                    return;
+                }
+
+                orders.forEach(order => {
+                    if (!order.items || order.items.length === 0) {
+                        const tr = document.createElement('tr');
+                        tr.innerHTML = `<td>${order.id}</td><td><b>${order.status}</b></td><td colspan="9">No items.</td>`;
+                        tbody.appendChild(tr);
+                    } else {
+                        order.items.forEach((item, idx) => {
+                            const tr = document.createElement('tr');
+                            tr.innerHTML = `
+                                <td>${idx === 0 ? order.id : ''}</td>
+                                <td>${idx === 0 ? '<b>' + order.status + '</b>' : ''}</td>
+                                <td>${item.id}</td>
+                                <td>${item.variant_id}</td>
+                                <td><b>${item.warehouse_code || 'N/A'}</b></td>
+                                <td>${item.quantity}</td>
+                                <td>${item.unit_price}</td>
+                                <td style="color:blue;"><b>${item.actual_paid_price}</b></td>
+                                <td>${item.refunded_quantity}</td>
+                                <td style="color:red;"><b>${item.refunded_amount}</b></td>
+                                <td>${item.is_fully_refunded ? 'Yes' : 'No'}</td>
+                            `;
+                            tbody.appendChild(tr);
+                        });
+                    }
+                });
+                appendLog(`[Ledger] Loaded ${orders.length} orders.`);
+            } catch (err) {
+                appendLog(`[ERROR] Failed to fetch ledger: ${err.message}`);
+            }
+        }
+
+        // Seed test data
+        document.getElementById('btn-seed').addEventListener('click', async () => {
+            appendLog('[Seed] Seeding test data...');
+            try {
+                const res = await fetch(`${API_BASE}/seed`, { method: 'POST' });
+                const data = await res.json();
+                if (res.ok) {
+                    appendLog(`[SUCCESS] Seeded orders: ${data.created_orders.join(', ')}`);
+                    fetchOrders();
+                } else {
+                    appendLog(`[ERROR] Seeding failed: ${JSON.stringify(data)}`);
+                }
+            } catch (err) {
+                appendLog(`[ERROR] Network error: ${err.message}`);
+            }
+        });
+
+        // Refresh button
+        document.getElementById('btn-refresh').addEventListener('click', fetchOrders);
+
+        // Execute action (Refund / Split)
+        document.getElementById('btn-action').addEventListener('click', async () => {
+            const action = document.getElementById('action-type').value;
+            const orderId = document.getElementById('input-order-id').value;
+            const itemIdOrVariant = parseInt(document.getElementById('input-item-id').value, 10);
+            const qty = parseInt(document.getElementById('input-qty').value, 10);
+
+            if (action === 'refund') {
+                appendLog(`[Refund] Processing refund for order ${orderId}, item/variant: ${itemIdOrVariant}, qty: ${qty}...`);
+                try {
+                    // Fetch original paid snapshot
+                    const orderRes = await fetch(`${API_BASE}/orders/${orderId}`);
+                    if (!orderRes.ok) throw new Error('Failed to query order');
+                    const orderData = await orderRes.json();
+                    let targetItem = orderData.items.find(i => i.id === itemIdOrVariant || i.variant_id === itemIdOrVariant);
+                    
+                    const targetItemId = targetItem ? targetItem.id : itemIdOrVariant;
+                    const payload = {
+                        idempotency_key: 'ui_refund_' + Math.random().toString(36).substr(2, 9),
+                        items: [{ order_item_id: targetItemId, refund_qty: qty }]
+                    };
+
+                    const res = await fetch(`${API_BASE}/orders/${orderId}/refund`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload)
+                    });
+                    const resData = await res.json();
+
+                    if (res.ok) {
+                        appendLog(`[Refund] Refunded: ${resData.refunded_amount}, status: ${resData.new_status}`);
+                        fetchOrders();
+                    } else {
+                        appendLog(`[Refund] Failed: ${JSON.stringify(resData.detail || resData)}`);
+                    }
+                } catch (err) {
+                    appendLog(`[ERROR] Refund failed: ${err.message}`);
+                }
+            } else if (action === 'split') {
+                appendLog(`[Split] Processing split for order ${orderId}...`);
+                try {
+                    const res = await fetch(`${API_BASE}/orders/${orderId}/split`, { method: 'POST' });
+                    const resData = await res.json();
+                    if (res.ok) {
+                        appendLog(`[Split] Order ${resData.parent_order_id} split into ${resData.warehouse_count} warehouse nodes`);
+                        resData.child_orders.forEach((child, i) => {
+                            const wc = (child.items && child.items.length > 0) ? child.items[0].warehouse_code : 'default';
+                            appendLog(`  ├── Child Order [ID: ${child.id}] -> Warehouse: ${wc}, Amount: $${child.total_amount}`);
+                        });
+                        fetchOrders();
+                    } else {
+                        appendLog(`[Split] Failed: ${JSON.stringify(resData.detail || resData)}`);
+                    }
+                } catch (err) {
+                    appendLog(`[ERROR] Split failed: ${err.message}`);
+                }
+            }
+        });
+
+        // Auto fetch on load
+        window.addEventListener('DOMContentLoaded', fetchOrders);
+    </script>
+</body>
+</html>
